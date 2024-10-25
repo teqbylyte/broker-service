@@ -29,7 +29,7 @@ func (app *Config) readJSON(w http.ResponseWriter, r *http.Request, data any) er
 		return errors.New("Body must have only a single json value")
 	}
 
-	return err
+	return nil
 }
 
 func (app *Config) writeJSON(w http.ResponseWriter, status int, data any, headers ...http.Header) error {
