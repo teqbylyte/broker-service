@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"net/rpc"
 )
 
 type RequestPayload struct {
@@ -54,7 +55,7 @@ func (app *Config) HandleSubmission(w http.ResponseWriter, r *http.Request) {
 	case "auth":
 		app.Authenticate(w, requestPayload.Auth)
 	case "log":
-		app.logEventViaRabbit(w, requestPayload.Log)
+		app.logItemViaRPC(w, requestPayload.Log)
 	default:
 		app.errorJSON(w, errors.New("unknown action"))
 	}
@@ -195,4 +196,24 @@ func (app *Config) pushToQueue(name, msg string) error {
 	err = emitter.Push(string(j), "log.INFOR")
 	
 	return err
+}
+
+func (app *Config) logItemViaRPC(w http.ResponseWriter, l LogPayload) {
+	// get rpc client
+	client, err := rpc.Dial("tcp", "logger-service:5001")
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	var result string
+	err = client.Call("RPCServer.LogInfo", l, &result)
+	if err != nil {
+		app.errorJSON(w, err)
+	}
+
+	app.writeJSON(w, http.StatusAccepted, jsonResponse{
+		Status: true,
+		Message: result,
+	})
 }
