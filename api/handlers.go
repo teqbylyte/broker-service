@@ -1,6 +1,7 @@
 package main
 
 import (
+	"broker/event"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -24,6 +25,12 @@ type LogPayload struct {
 	Data string `json:"data"`
 }
 
+type MailPayload struct {
+	To string `json:"to"`
+	Subject string `json:"subject"`
+	Message string `json:"message"`
+}
+
 func (app *Config) Broker(w http.ResponseWriter, r *http.Request) {
 	payload := jsonResponse{
 		Status:  true,
@@ -36,8 +43,6 @@ func (app *Config) Broker(w http.ResponseWriter, r *http.Request) {
 func (app *Config) HandleSubmission(w http.ResponseWriter, r *http.Request) {
 	var requestPayload RequestPayload
 
-	log.Println("Handling")
-
 	err := app.readJSON(w, r, &requestPayload)
 	if err != nil {
 		log.Println(err)
@@ -45,13 +50,11 @@ func (app *Config) HandleSubmission(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println("Get request body")
-
 	switch requestPayload.Action {
 	case "auth":
 		app.Authenticate(w, requestPayload.Auth)
 	case "log":
-		app.LogItem(w, requestPayload.Log)
+		app.logEventViaRabbit(w, requestPayload.Log)
 	default:
 		app.errorJSON(w, errors.New("unknown action"))
 	}
@@ -75,8 +78,6 @@ func (app *Config) Authenticate(w http.ResponseWriter, a AuthPayload) {
 		return
 	}
 
-	log.Println("Called auth service")
-
 	defer res.Body.Close()
 
 	// check status code returned
@@ -88,8 +89,6 @@ func (app *Config) Authenticate(w http.ResponseWriter, a AuthPayload) {
 		return
 	}
 
-	log.Println("Checked status from auth service")
-
 	// create a variable
 	var serviceJson jsonResponse
 	err = json.NewDecoder(res.Body).Decode(&serviceJson)
@@ -98,14 +97,19 @@ func (app *Config) Authenticate(w http.ResponseWriter, a AuthPayload) {
 		return
 	}
 
-	log.Println("Get auth error")
-
 	if !serviceJson.Status {
 		app.errorJSON(w, errors.New(serviceJson.Message), http.StatusUnauthorized)
 		return
 	} 
 	
 	log.Println("Successful auth")
+
+	// Send mail
+	go app.sendMail(MailPayload{
+		To: a.Email,
+		Subject: "Sign In successful",
+		Message: "We have successfully signed you in to our service. Thank you for choosing us once again.",
+	})
 
 	app.writeJSON(w, http.StatusAccepted, serviceJson)
 }
@@ -139,4 +143,56 @@ func (app *Config) LogItem(w http.ResponseWriter, entry LogPayload) {
 		Status: true,
 		Message: "Logged",
 	})
+}
+
+func (app *Config) sendMail(msg MailPayload) error {
+	jsonData, _ := json.MarshalIndent(msg, "", "\t")
+
+	mailServiceUrl := "http://mail-service/send"
+
+	request, err := http.NewRequest("POST", mailServiceUrl, bytes.NewBuffer(jsonData))
+
+	if err != nil {
+		log.Println(err)
+		return err
+	}
+
+	log.Println("Sending mail")
+
+	client := &http.Client{}
+	_, err = client.Do(request)
+	
+	log.Println(err)
+
+	return err
+}
+
+func (app *Config) logEventViaRabbit(w http.ResponseWriter, l LogPayload) {
+	err := app.pushToQueue(l.Name, l.Data)
+	if err != nil {
+		app.errorJSON(w, err)
+		return
+	}
+
+	app.writeJSON(w, http.StatusAccepted, jsonResponse{
+		Status: true,
+		Message: "logged via RabbitMQ",
+	})
+}
+
+func (app *Config) pushToQueue(name, msg string) error {
+	emitter, err := event.NewEventEmitter(app.Rabbit)
+	if err != nil {
+		return err
+	}
+
+	payload := LogPayload {
+		Name: name,
+		Data: msg,
+	}
+
+	j, _ := json.Marshal(&payload)
+	err = emitter.Push(string(j), "log.INFOR")
+	
+	return err
 }
